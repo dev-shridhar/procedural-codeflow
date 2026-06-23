@@ -80,7 +80,7 @@ class Builder {
       if (callNode) {
         const resolved = resolveCall(callNode, this.currentUri ? uriFromString(this.currentUri) : undefined, this.index);
         if (resolved && resolved.entry.uri.fsPath !== this.currentFileUri) {
-          return this.inlineCall(node, resolved, preds);
+          return this.inlineCall(node, resolved.entry, preds);
         }
       }
     }
