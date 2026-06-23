@@ -1,10 +1,12 @@
 import * as vscode from 'vscode';
+import Parser from 'web-tree-sitter';
 import { ensureParser } from './parser';
 import { buildCfg } from './cfg/builder';
 import { CodeFlowPanel } from './panel';
 import { WorkspaceIndex } from './indexer';
 import { ClassIndex } from './class-indexer';
 import { resolveCall } from './resolver';
+import { Cfg, CfgNode, CfgEdge } from './cfg/model';
 
 let currentPanel: CodeFlowPanel | undefined;
 let workspaceIndex: WorkspaceIndex;
@@ -35,15 +37,32 @@ export function activate(context: vscode.ExtensionContext) {
       const offset = editor.document.offsetAt(editor.selection.active);
 
       let fnNode: import('web-tree-sitter').default.SyntaxNode | null = null;
+      let resolvedSource: string | undefined;
       const cursorNode = tree.rootNode.descendantForIndex(offset);
       const callNode = findCallAncestor(cursorNode);
       if (callNode) {
         const resolved = resolveCall(callNode, editor.document.uri, workspaceIndex, classIndex);
         if (resolved) {
           fnNode = resolved.entry.node;
+          if (resolved.entry.uri.toString() !== editor.document.uri.toString()) {
+            const doc = await vscode.workspace.openTextDocument(resolved.entry.uri);
+            resolvedSource = doc.getText();
+          }
         } else {
           const callName = callNode.childForFieldName('function')?.text ?? 'unknown';
-          vscode.window.showInformationMessage(`Cannot resolve call "${callName}" — showing enclosing function.`);
+          const lspResult = await resolveViaLSP(editor, parser, callName);
+          if (lspResult) {
+            fnNode = lspResult.node;
+            resolvedSource = lspResult.source;
+          } else {
+            // Try signature card for external calls
+            const sigCard = await buildSignatureCard(editor, callName);
+            if (sigCard) {
+              showCfg(editor, context, sigCard);
+              return;
+            }
+            vscode.window.showInformationMessage(`Cannot resolve call "${callName}" — showing enclosing function.`);
+          }
         }
       }
       if (!fnNode) {
@@ -57,37 +76,105 @@ export function activate(context: vscode.ExtensionContext) {
         }
       }
 
+      const useSrc = resolvedSource ?? src;
+      const doc = await vscode.workspace.openTextDocument({ content: useSrc });
       const cfg = buildCfg(fnNode, {
-        getText: () => src,
-        offsetAt: (pos) => editor.document.offsetAt(new vscode.Position(pos.line, pos.character)),
+        getText: () => useSrc,
+        offsetAt: (pos) => doc.offsetAt(new vscode.Position(pos.line, pos.character)),
         positionAt: (offset) => {
-          const pos = editor.document.positionAt(offset);
+          const pos = doc.positionAt(offset);
           return { line: pos.line, character: pos.character };
         },
       }, workspaceIndex, editor.document.uri.toString(), classIndex);
 
-      if (currentPanel) currentPanel.dispose();
-      currentPanel = CodeFlowPanel.create(context, editor.document.uri, cfg, (range) => {
-        if (!range) return;
-        if (range.uri) {
-          const uri = vscode.Uri.parse(range.uri);
-          vscode.workspace.openTextDocument(uri).then(doc => {
-            vscode.window.showTextDocument(doc).then(e => {
-              const start = new vscode.Position(range.startLine, range.startCol);
-              const end = new vscode.Position(range.endLine, range.endCol);
-              e.selection = new vscode.Selection(start, end);
-              e.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
-            });
-          });
-        } else {
-          const start = new vscode.Position(range.startLine, range.startCol);
-          const end = new vscode.Position(range.endLine, range.endCol);
-          editor.selection = new vscode.Selection(start, end);
-          editor.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
-        }
-      });
+      showCfg(editor, context, cfg);
     })
   );
+}
+
+function showCfg(editor: vscode.TextEditor, context: vscode.ExtensionContext, cfg: Cfg) {
+  if (currentPanel) currentPanel.dispose();
+  currentPanel = CodeFlowPanel.create(context, editor.document.uri, cfg, (range) => {
+    if (!range) return;
+    if (range.uri) {
+      const uri = vscode.Uri.parse(range.uri);
+      vscode.workspace.openTextDocument(uri).then(doc => {
+        vscode.window.showTextDocument(doc).then(e => {
+          const start = new vscode.Position(range.startLine, range.startCol);
+          const end = new vscode.Position(range.endLine, range.endCol);
+          e.selection = new vscode.Selection(start, end);
+          e.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
+        });
+      });
+    } else {
+      const start = new vscode.Position(range.startLine, range.startCol);
+      const end = new vscode.Position(range.endLine, range.endCol);
+      editor.selection = new vscode.Selection(start, end);
+      editor.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
+    }
+  });
+}
+
+async function resolveViaLSP(
+  editor: vscode.TextEditor,
+  parser: Parser,
+  _callName: string,
+): Promise<{ node: Parser.SyntaxNode; source: string } | null> {
+  const pos = editor.selection.active;
+  const definitions = await vscode.commands.executeCommand<vscode.Location[]>(
+    'vscode.executeDefinitionProvider',
+    editor.document.uri,
+    pos,
+  );
+  if (!definitions || definitions.length === 0) return null;
+
+  const def = definitions[0];
+  const doc = await vscode.workspace.openTextDocument(def.uri);
+  const src = doc.getText();
+  const tree = parser.parse(src);
+  const defOffset = doc.offsetAt(def.range.start);
+
+  // Try to find enclosing function at definition
+  let n = tree.rootNode.descendantForIndex(defOffset);
+  while (n) {
+    if (n.type === 'function_definition') return { node: n, source: src };
+    if (n.type === 'class_definition') return { node: n, source: src };
+    n = n.parent;
+  }
+  return null;
+}
+
+async function buildSignatureCard(editor: vscode.TextEditor, callName: string): Promise<Cfg | null> {
+  const pos = editor.selection.active;
+  const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+    'vscode.executeHoverProvider',
+    editor.document.uri,
+    pos,
+  );
+  if (!hovers || hovers.length === 0) return null;
+
+  const hover = hovers[0];
+  const contents = hover.contents.map(c => typeof c === 'string' ? c : (c as any).value).join('\n');
+  const lines = contents.split('\n');
+  const signature = lines[0] ?? callName;
+  const docstring = lines.slice(1).filter(l => l.trim()).join('\n').replace(/^```[\w]*\n?|```$/gm, '').trim();
+
+  return {
+    nodes: [
+      { id: 'entry', kind: 'entry', label: 'entry' },
+      { id: 'sig', kind: 'statement', label: signature },
+      { id: 'doc', kind: 'statement', label: docstring || '(no documentation)' },
+      { id: 'exit', kind: 'exit', label: 'exit' },
+    ],
+    edges: [
+      { from: 'entry', to: 'sig', kind: 'normal' },
+      { from: 'sig', to: 'doc', kind: 'normal' },
+      { from: 'doc', to: 'exit', kind: 'normal' },
+    ],
+    regions: [],
+    entryId: 'entry',
+    exitId: 'exit',
+  };
 }
 
 function findEnclosingFunction(root: import('web-tree-sitter').default.SyntaxNode, offset: number): import('web-tree-sitter').default.SyntaxNode | null {
