@@ -4,6 +4,12 @@
   "description": "Render the procedural control flow of a selected function as an interactive, collapsible graph",
   "version": "0.1.0",
   "publisher": "dev-shridhar",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dev-shridhar/procedural-codeflow.git"
+  },
+  "license": "MIT",
+  "icon": "media/icon128.png",
   "engines": {
     "vscode": "^1.90.0"
   },
