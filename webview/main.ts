@@ -5,6 +5,12 @@ import { Cfg, CfgNode, CfgEdge } from '../src/cfg/model';
 declare const __CFG__: Cfg;
 const vscode = acquireVsCodeApi();
 
+window.onerror = function(msg, url, line, col, err) {
+  const root = document.getElementById('root');
+  if (root) root.innerHTML = `<div class="error">${msg} at ${line}:${col}<br>${err?.stack ?? ''}</div>`;
+  console.error('Uncaught:', msg, err);
+};
+
 const SHAPES = {
   entry:     { fill: '#1b5e20', stroke: '#4caf50', icon: '▶', shape: 'oval' },
   exit:      { fill: '#b71c1c', stroke: '#f44336', icon: '■', shape: 'oval' },
@@ -107,6 +113,8 @@ async function render(cfg: Cfg) {
     currentCfg = cfg;
     const { nodes: active, edges: raw } = filterActive(cfg);
     const egs = reroute(cfg, raw);
+
+    if (!active.length) { root.innerHTML = '<div class="error">No nodes to render (all collapsed?)</div>'; return; }
 
     const elkGraph = {
       id: 'root',
@@ -389,29 +397,27 @@ function computePathCounts(nodes: CfgNode[], edges: CfgEdge[]): Map<string, numb
   }
 
   const memo = new Map<string, number>();
-  const visited = new Set<string>();
 
-  function dfs(id: string): number {
+  function dfs(id: string, visiting: Set<string>): number {
     if (memo.has(id)) return memo.get(id)!;
     if (entryIds.includes(id)) { memo.set(id, 1); return 1; }
+    if (visiting.has(id)) return 0;
+    visiting.add(id);
     let total = 0;
     for (const [from, tos] of adj) {
       for (const to of tos) {
         if (to !== id || isBackEdge.get(from + '→' + to)) continue;
-        if (visited.has(from)) continue;
-        visited.add(from);
-        total += dfs(from);
-        visited.delete(from);
+        total += dfs(from, visiting);
       }
     }
+    visiting.delete(id);
     memo.set(id, Math.max(total, 1));
     return memo.get(id)!;
   }
 
   const result = new Map<string, number>();
   for (const n of nodes) {
-    visited.clear();
-    result.set(n.id, dfs(n.id));
+    result.set(n.id, dfs(n.id, new Set()));
   }
   return result;
 }
