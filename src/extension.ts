@@ -28,14 +28,15 @@ export function activate(context: vscode.ExtensionContext) {
       const tree = parser.parse(editor.document.getText());
       const offset = editor.document.offsetAt(editor.selection.active);
 
-      let fnNode = findEnclosingFunction(tree.rootNode, offset);
+      let fnNode: import('web-tree-sitter').default.SyntaxNode | null = null;
+      const cursorNode = tree.rootNode.descendantForIndex(offset);
+      const callNode = findCallAncestor(cursorNode);
+      if (callNode) {
+        const resolved = resolveCall(callNode, editor.document.uri, workspaceIndex);
+        if (resolved) fnNode = resolved.entry.node;
+      }
       if (!fnNode) {
-        const cursorNode = tree.rootNode.descendantForIndex(offset);
-        const callNode = findCallAncestor(cursorNode);
-        if (callNode) {
-          const resolved = resolveCall(callNode, editor.document.uri, workspaceIndex);
-          if (resolved) fnNode = resolved.entry.node;
-        }
+        fnNode = findEnclosingFunction(tree.rootNode, offset);
       }
       if (!fnNode) {
         fnNode = findFirstFunction(tree.rootNode);
