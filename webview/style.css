@@ -88,6 +88,31 @@ body {
   max-width: 75%;
 }
 
+/* Collapsible region header — shows [+] indicator */
+.node-collapsible::after {
+  content: '−';
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--vscode-sideBar-background, #252526);
+  border: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+  border-radius: 50%;
+  color: var(--vscode-foreground, #ccc);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.node-collapsed::after {
+  content: '+';
+}
+
 /* Merge nodes (circle shape) have no label padding */
 .node-circle .node-label {
   display: none;

@@ -65,6 +65,7 @@ let pathCounts = new Map<string, number>();
 let cfgEdges: CfgEdge[] = [];
 let cfgNodes: CfgNode[] = [];
 let pathsMode = false;
+let currentCfg: Cfg | null = null;
 
 async function render(cfg: Cfg) {
   const elk = new ELK();
@@ -103,6 +104,7 @@ async function render(cfg: Cfg) {
   const rc = rough.svg(shapesSvg);
 
   try {
+    currentCfg = cfg;
     const { nodes: active, edges: raw } = filterActive(cfg);
     const egs = reroute(cfg, raw);
 
@@ -136,6 +138,8 @@ async function render(cfg: Cfg) {
     cfgNodes = active;
     cfgEdges = egs;
     pathCounts = computePathCounts(active, egs);
+
+    const collapsibleIds = new Set(cfg.regions.map(r => r.headerId));
 
     shapesSvg.setAttribute('viewBox', `0 0 ${gW} ${gH}`);
     shapesSvg.style.width = gW + 'px';
@@ -232,7 +236,23 @@ async function render(cfg: Cfg) {
         hideTooltip();
       });
 
-      if (node.range) {
+      if (collapsibleIds.has(node.id)) {
+        div.classList.add('node-collapsible');
+        if (collapsedRegions.has(node.regionId ?? '')) {
+          div.classList.add('node-collapsed');
+        }
+        div.title = 'Double-click to expand/collapse';
+        div.addEventListener('dblclick', () => {
+          const region = cfg.regions.find(r => r.headerId === node.id);
+          if (!region) return;
+          if (collapsedRegions.has(region.id)) {
+            collapsedRegions.delete(region.id);
+          } else {
+            collapsedRegions.add(region.id);
+          }
+          if (currentCfg) render(currentCfg);
+        });
+      } else if (node.range) {
         div.style.cursor = 'pointer';
         div.addEventListener('click', () => vscode.postMessage({ type: 'reveal', range: node.range }));
       }
