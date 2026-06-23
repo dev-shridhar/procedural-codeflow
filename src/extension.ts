@@ -39,7 +39,12 @@ export function activate(context: vscode.ExtensionContext) {
       const callNode = findCallAncestor(cursorNode);
       if (callNode) {
         const resolved = resolveCall(callNode, editor.document.uri, workspaceIndex, classIndex);
-        if (resolved) fnNode = resolved.entry.node;
+        if (resolved) {
+          fnNode = resolved.entry.node;
+        } else {
+          const callName = callNode.childForFieldName('function')?.text ?? 'unknown';
+          vscode.window.showInformationMessage(`Cannot resolve call "${callName}" — showing enclosing function.`);
+        }
       }
       if (!fnNode) {
         fnNode = findEnclosingFunction(tree.rootNode, offset);
@@ -95,9 +100,27 @@ function findEnclosingFunction(root: import('web-tree-sitter').default.SyntaxNod
 }
 
 function findCallAncestor(node: import('web-tree-sitter').default.SyntaxNode | null): import('web-tree-sitter').default.SyntaxNode | null {
-  while (node) {
-    if (node.type === 'call') return node;
-    node = node.parent;
+  // First try walking up to find a direct call ancestor
+  let n = node;
+  while (n) {
+    if (n.type === 'call') return n;
+    n = n.parent;
+  }
+  // If not found, search the entire statement at cursor for any call
+  if (!node) return null;
+  let stmt = node;
+  while (stmt.parent && stmt.parent.type !== 'function_definition' && stmt.parent.type !== 'module' && stmt.parent.type !== 'block') {
+    stmt = stmt.parent;
+  }
+  return findFirstCallDescendant(stmt);
+}
+
+function findFirstCallDescendant(node: import('web-tree-sitter').default.SyntaxNode | null): import('web-tree-sitter').default.SyntaxNode | null {
+  if (!node) return null;
+  if (node.type === 'call') return node;
+  for (const child of node.namedChildren) {
+    const found = findFirstCallDescendant(child);
+    if (found) return found;
   }
   return null;
 }
