@@ -68,7 +68,6 @@ let zoom = 1, panX = 0, panY = 0;
 let tooltipEl: HTMLDivElement | null = null;
 let viewportEl: HTMLDivElement | null = null;
 let gW = 400, gH = 300;
-let pathCounts = new Map<string, number>();
 let cfgEdges: CfgEdge[] = [];
 let cfgNodes: CfgNode[] = [];
 let pathsMode = false;
@@ -159,7 +158,6 @@ async function render(cfg: Cfg) {
 
     cfgNodes = active;
     cfgEdges = egs;
-    pathCounts = computePathCounts(active, egs);
 
     const collapsibleIds = new Set(cfg.regions.map(r => r.headerId));
 
@@ -315,12 +313,9 @@ async function render(cfg: Cfg) {
 function showTooltip(e: MouseEvent, node: CfgNode) {
   if (!tooltipEl) return;
   const s = SHAPES[node.kind] ?? SHAPES.statement;
-  const pc = pathCounts.get(node.id);
-  const pathInfo = pc !== undefined ? `<div class="tt-paths">${pc} path${pc !== 1 ? 's' : ''} from entry</div>` : '';
   tooltipEl.innerHTML = `
     <div class="tt-header" style="color:${s.stroke}">${node.kind.toUpperCase()}</div>
     <div class="tt-body">${node.label ?? ''}</div>
-    ${pathInfo}
     ${node.range ? `<div class="tt-src">Line ${node.range.startLine + 1}</div>` : ''}
   `;
   tooltipEl.style.display = 'block';
@@ -409,43 +404,6 @@ function setupInteraction(canvas: HTMLElement) {
     } else { panX = 0; panY = 0; }
     applyTransform();
   });
-}
-
-function computePathCounts(nodes: CfgNode[], edges: CfgEdge[]): Map<string, number> {
-  const adj = new Map<string, string[]>();
-  const isBackEdge = new Map<string, boolean>();
-  const entryIds = nodes.filter(n => n.kind === 'entry').map(n => n.id);
-
-  for (const n of nodes) adj.set(n.id, []);
-  for (const e of edges) {
-    adj.get(e.from)?.push(e.to);
-    isBackEdge.set(e.from + '→' + e.to, e.kind === 'loop-back');
-  }
-
-  const memo = new Map<string, number>();
-
-  function dfs(id: string, visiting: Set<string>): number {
-    if (memo.has(id)) return memo.get(id)!;
-    if (entryIds.includes(id)) { memo.set(id, 1); return 1; }
-    if (visiting.has(id)) return 0;
-    visiting.add(id);
-    let total = 0;
-    for (const [from, tos] of adj) {
-      for (const to of tos) {
-        if (to !== id || isBackEdge.get(from + '→' + to)) continue;
-        total += dfs(from, visiting);
-      }
-    }
-    visiting.delete(id);
-    memo.set(id, Math.max(total, 1));
-    return memo.get(id)!;
-  }
-
-  const result = new Map<string, number>();
-  for (const n of nodes) {
-    result.set(n.id, dfs(n.id, new Set()));
-  }
-  return result;
 }
 
 function highlightPathsTo(targetId: string) {
