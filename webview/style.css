@@ -26,32 +26,90 @@ body {
   cursor: grabbing;
 }
 
-#svg {
+/* Viewport — pan/zoom target */
+.viewport {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* SVG layer for rough shapes and edges */
+.shapes-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
-  width: 100%;
-  height: 100%;
-  background: var(--vscode-editor-background, #1e1e1e);
+  pointer-events: none;
 }
 
-.node-shape {
-  transition: filter 0.15s ease, stroke-width 0.15s ease;
+/* Nodes HTML layer — text only, sits above rough shapes */
+.nodes {
+  position: absolute;
+  top: 0;
+  left: 0;
 }
 
-.node-group:hover .node-shape {
-  filter: brightness(1.3);
-  stroke-width: 3;
+/* ---- Node base (text div, no background) ---- */
+.node {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  transition: transform 0.12s ease;
+  z-index: 1;
 }
 
+.node:hover {
+  transform: scale(1.06);
+}
+
+.node-label {
+  text-align: center;
+  line-height: 1.2;
+  padding: 0 6px;
+  pointer-events: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+}
+
+/* Diamond gets smaller text and narrower label */
+.node-diamond .node-label {
+  font-size: 11px;
+  max-width: 75%;
+}
+
+/* Merge nodes (circle shape) have no label padding */
+.node-circle .node-label {
+  display: none;
+}
+
+/* Rough shape hover glow */
+.rough-shape {
+  transition: filter 0.15s ease;
+}
+
+/* Edge styles */
 .edge {
-  transition: stroke-width 0.15s ease;
+  transition: opacity 0.15s ease;
 }
 
 .edge:hover {
-  stroke-width: 3;
+  opacity: 0.8;
 }
 
 .edge-label {
   pointer-events: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 /* Toolbar */

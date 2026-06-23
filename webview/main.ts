@@ -1,4 +1,5 @@
 import ELK from 'elkjs/lib/elk.bundled.js';
+import rough from 'roughjs';
 import { Cfg, CfgNode, CfgEdge } from '../src/cfg/model';
 
 declare const __CFG__: Cfg;
@@ -31,24 +32,6 @@ const LABEL: Record<string, string> = {
 interface ElkNode { id: string; width: number; height: number; x?: number; y?: number }
 interface ElkEdge { id: string; sources: string[]; targets: string[]; sections?: Array<{ startPoint: {x:number,y:number}; endPoint: {x:number,y:number}; bendPoints?: Array<{x:number,y:number}> }> }
 
-function diamondPoints(cx: number, cy: number, w: number, h: number): string {
-  return `${cx+w/2},${cy} ${cx+w},${cy+h/2} ${cx+w/2},${cy+h} ${cx},${cy+h/2}`;
-}
-
-function hexagonPoints(cx: number, cy: number, w: number, h: number): string {
-  const hw = w / 2, hh = h / 2, qw = w / 6;
-  return `${cx+qw},${cy} ${cx+w-qw},${cy} ${cx+w},${cy+hh} ${cx+w-qw},${cy+h} ${cx+qw},${cy+h} ${cx},${cy+hh}`;
-}
-
-function ovalPath(cx: number, cy: number, w: number, h: number): string {
-  const rx = w / 2, ry = h / 2;
-  return `M ${cx+rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx+rx} ${cy+h} A ${rx} ${ry} 0 0 1 ${cx+rx} ${cy} Z`;
-}
-
-function truncate(s: string, max: number): string {
-  return s ? (s.length > max ? s.slice(0, max-1) + '\u2026' : s) : '';
-}
-
 function measure(n: CfgNode): { w: number; h: number } {
   const s = n.label?.split('\n')[0] ?? '';
   const maxW = n.kind === 'entry' || n.kind === 'exit' ? 80 : 200;
@@ -76,6 +59,8 @@ function midPoint(sec: ElkEdge['sections'][0]): { x: number; y: number } {
 const collapsedRegions = new Set<string>();
 let zoom = 1, panX = 0, panY = 0;
 let tooltipEl: HTMLDivElement | null = null;
+let viewportEl: HTMLDivElement | null = null;
+let gW = 400, gH = 300;
 
 async function render(cfg: Cfg) {
   const elk = new ELK();
@@ -89,35 +74,27 @@ async function render(cfg: Cfg) {
         <button class="tb-btn" id="fit" title="Fit to View">⊡</button>
       </div>
       <div class="tooltip" id="tooltip"></div>
-      <svg id="svg" width="100%" height="100%"></svg>
+      <div class="viewport" id="viewport">
+        <svg class="shapes-svg" id="shapes-svg">
+          <defs></defs>
+          <g id="edges-g"></g>
+          <g id="shapes-g"></g>
+        </svg>
+        <div class="nodes" id="nodes"></div>
+      </div>
     </div>
   `;
 
-  const svg = document.getElementById('svg') as unknown as SVGSVGElement;
+  const shapesSvg = document.getElementById('shapes-svg') as unknown as SVGSVGElement;
+  const edgesG = document.getElementById('edges-g') as unknown as SVGGElement;
+  const shapesG = document.getElementById('shapes-g') as unknown as SVGGElement;
+  const nodesDiv = document.getElementById('nodes') as HTMLDivElement;
   const canvas = document.getElementById('canvas')!;
+  viewportEl = document.getElementById('viewport') as HTMLDivElement;
   const tooltip = document.getElementById('tooltip') as HTMLDivElement;
   tooltipEl = tooltip;
 
-  const ns = 'http://www.w3.org/2000/svg';
-  const defs = document.createElementNS(ns, 'defs');
-  defs.innerHTML = `
-    <filter id="shadow"><feDropShadow dx="0" dy="2" stdDeviation="4" flood-opacity="0.35"/></filter>
-    <filter id="shadow-sm"><feDropShadow dx="0" dy="1" stdDeviation="2" flood-opacity="0.25"/></filter>
-    <marker id="arr-gray" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#78909c"/></marker>
-    <marker id="arr-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#4caf50"/></marker>
-    <marker id="arr-red" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#ef5350"/></marker>
-    <marker id="arr-purple" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#ab47bc"/></marker>
-    <marker id="arr-orange" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#ff7043"/></marker>
-  `;
-  svg.appendChild(defs);
-
-  const mainG = document.createElementNS(ns, 'g');
-  svg.appendChild(mainG);
-
-  const edgesG = document.createElementNS(ns, 'g');
-  const nodesG = document.createElementNS(ns, 'g');
-  mainG.appendChild(edgesG);
-  mainG.appendChild(nodesG);
+  const rc = rough.svg(shapesSvg);
 
   try {
     const { nodes: active, edges: raw } = filterActive(cfg);
@@ -142,34 +119,39 @@ async function render(cfg: Cfg) {
     const lc = (layout.children ?? []) as ElkNode[];
     const le = (layout.edges ?? []) as ElkEdge[];
 
-    let gW = 400, gH = 300;
-    for (const c of lc) { if (c.x && c.y) { gW = Math.max(gW, c.x+(c.width??200)+100); gH = Math.max(gH, c.y+(c.height??40)+100); } }
+    gW = 400; gH = 300;
+    for (const c of lc) {
+      if (c.x && c.y) {
+        gW = Math.max(gW, c.x + (c.width ?? 200) + 100);
+        gH = Math.max(gH, c.y + (c.height ?? 40) + 100);
+      }
+    }
 
-    svg.setAttribute('viewBox', `0 0 ${gW} ${gH}`);
+    shapesSvg.setAttribute('viewBox', `0 0 ${gW} ${gH}`);
+    shapesSvg.style.width = gW + 'px';
+    shapesSvg.style.height = gH + 'px';
 
     for (const e of le) {
       if (!e.sections?.length) continue;
       const info = eMap.get(e.id);
       const st = EDGE_STYLES[info?.kind ?? 'normal'] ?? EDGE_STYLES.normal;
-      const mid = (k: string) => k === 'true' ? 'green' : k === 'false' ? 'red' : k === 'loop-back' ? 'purple' : k === 'exception' ? 'orange' : 'gray';
 
       for (const sec of e.sections) {
-        const p = document.createElementNS(ns, 'path');
-        p.setAttribute('d', buildEdgeD(sec));
-        p.setAttribute('fill', 'none');
-        p.setAttribute('stroke', st.color);
-        p.setAttribute('stroke-width', '2');
-        p.setAttribute('stroke-linejoin', 'round');
-        p.setAttribute('marker-end', `url(#arr-${mid(info?.kind ?? '')})`);
-        if (st.dash) p.setAttribute('stroke-dasharray', st.dash);
-        p.classList.add('edge');
-        edgesG.appendChild(p);
+        const d = buildEdgeD(sec);
+        const el = rc.path(d, {
+          stroke: st.color,
+          strokeWidth: 2,
+          roughness: 1,
+          bowing: 0.8,
+        });
+        el.classList.add('edge');
+        edgesG.appendChild(el);
       }
 
       const lbl = LABEL[info?.kind ?? ''] ?? '';
       if (lbl) {
-        const mp = midPoint(e.sections[e.sections.length-1]);
-        const t = document.createElementNS(ns, 'text');
+        const mp = midPoint(e.sections[e.sections.length - 1]);
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
         t.setAttribute('x', String(mp.x));
         t.setAttribute('y', String(mp.y - 6));
         t.setAttribute('fill', st.color);
@@ -182,6 +164,8 @@ async function render(cfg: Cfg) {
       }
     }
 
+    const ns = 'http://www.w3.org/2000/svg';
+
     for (const c of lc) {
       if (!c.x || !c.y) continue;
       const node = cMap.get(c.id);
@@ -190,89 +174,62 @@ async function render(cfg: Cfg) {
       const cw = c.width ?? 200, ch = c.height ?? 40;
       const cx = c.x, cy = c.y;
 
-      const g = document.createElementNS(ns, 'g');
-      g.setAttribute('class', 'node-group');
-      g.dataset.id = node.id;
+      let roughEl: SVGElement;
+      const opts = { fill: st.fill, fillStyle: 'solid' as const, stroke: st.stroke, strokeWidth: 2, roughness: 1.6, bowing: 1.2 };
 
       if (st.shape === 'oval') {
-        const path = document.createElementNS(ns, 'path');
-        path.setAttribute('d', ovalPath(cx, cy, cw, ch));
-        path.setAttribute('fill', st.fill);
-        path.setAttribute('stroke', st.stroke);
-        path.setAttribute('stroke-width', '2');
-        path.setAttribute('filter', 'url(#shadow)');
-        path.classList.add('node-shape');
-        g.appendChild(path);
+        roughEl = rc.ellipse(cx + cw / 2, cy + ch / 2, cw * 0.85, ch * 0.8, opts) as SVGElement;
       } else if (st.shape === 'diamond') {
-        const poly = document.createElementNS(ns, 'polygon');
-        poly.setAttribute('points', diamondPoints(cx, cy, cw, ch));
-        poly.setAttribute('fill', st.fill);
-        poly.setAttribute('stroke', st.stroke);
-        poly.setAttribute('stroke-width', '2');
-        poly.setAttribute('filter', 'url(#shadow)');
-        poly.classList.add('node-shape');
-        g.appendChild(poly);
+        const pts = [[cx + cw / 2, cy], [cx + cw, cy + ch / 2], [cx + cw / 2, cy + ch], [cx, cy + ch / 2]];
+        roughEl = rc.polygon(pts, opts) as SVGElement;
       } else if (st.shape === 'hexagon') {
-        const poly = document.createElementNS(ns, 'polygon');
-        poly.setAttribute('points', hexagonPoints(cx, cy, cw, ch));
-        poly.setAttribute('fill', st.fill);
-        poly.setAttribute('stroke', st.stroke);
-        poly.setAttribute('stroke-width', '2');
-        poly.setAttribute('filter', 'url(#shadow)');
-        poly.classList.add('node-shape');
-        g.appendChild(poly);
+        const qw = cw / 6;
+        const pts = [[cx + qw, cy], [cx + cw - qw, cy], [cx + cw, cy + ch / 2], [cx + cw - qw, cy + ch], [cx + qw, cy + ch], [cx, cy + ch / 2]];
+        roughEl = rc.polygon(pts, opts) as SVGElement;
       } else if (st.shape === 'circle') {
-        const r = Math.min(cw, ch) / 2;
-        const circ = document.createElementNS(ns, 'circle');
-        circ.setAttribute('cx', String(cx + cw/2));
-        circ.setAttribute('cy', String(cy + ch/2));
-        circ.setAttribute('r', String(r));
-        circ.setAttribute('fill', st.fill);
-        circ.setAttribute('stroke', st.stroke);
-        circ.setAttribute('stroke-width', '2');
-        circ.setAttribute('filter', 'url(#shadow-sm)');
-        circ.classList.add('node-shape');
-        g.appendChild(circ);
+        const d = Math.min(cw, ch) * 0.9;
+        roughEl = rc.circle(cx + cw / 2, cy + ch / 2, d, opts) as SVGElement;
       } else {
-        const rect = document.createElementNS(ns, 'rect');
-        rect.setAttribute('x', String(cx));
-        rect.setAttribute('y', String(cy));
-        rect.setAttribute('width', String(cw));
-        rect.setAttribute('height', String(ch));
-        rect.setAttribute('rx', '6');
-        rect.setAttribute('ry', '6');
-        rect.setAttribute('fill', st.fill);
-        rect.setAttribute('stroke', st.stroke);
-        rect.setAttribute('stroke-width', '2');
-        rect.setAttribute('filter', 'url(#shadow)');
-        rect.classList.add('node-shape');
-        g.appendChild(rect);
+        roughEl = rc.rectangle(cx, cy, cw, ch, opts) as SVGElement;
       }
 
-      const txt = document.createElementNS(ns, 'text');
-      txt.setAttribute('x', String(cx + cw/2));
-      txt.setAttribute('y', String(cy + ch/2));
-      txt.setAttribute('fill', '#fff');
-      txt.setAttribute('font-size', st.shape === 'diamond' ? '11' : '12');
-      txt.setAttribute('font-weight', '500');
-      txt.setAttribute('text-anchor', 'middle');
-      txt.setAttribute('dominant-baseline', 'middle');
-      txt.setAttribute('font-family', 'var(--vscode-editor-font-family, monospace)');
-      txt.textContent = truncate(node.label?.split('\n')[0] ?? '', st.shape === 'diamond' ? 12 : 24);
-      g.appendChild(txt);
+      roughEl.classList.add('rough-shape');
+      roughEl.dataset.id = node.id;
+      shapesG.appendChild(roughEl);
+
+      const div = document.createElement('div');
+      div.className = `node node-${st.shape}`;
+      div.dataset.id = node.id;
+      div.style.left = cx + 'px';
+      div.style.top = cy + 'px';
+      div.style.width = cw + 'px';
+      div.style.height = ch + 'px';
+
+      const label = document.createElement('span');
+      label.className = 'node-label';
+      label.textContent = node.label?.split('\n')[0] ?? '';
+      div.appendChild(label);
+
+      div.addEventListener('mouseenter', (e) => {
+        roughEl.style.filter = 'brightness(1.2) contrast(1.1)';
+        if (node.range) showTooltip(e, node);
+      });
+      div.addEventListener('mousemove', (e) => moveTooltip(e));
+      div.addEventListener('mouseleave', () => {
+        roughEl.style.filter = '';
+        hideTooltip();
+      });
 
       if (node.range) {
-        g.style.cursor = 'pointer';
-        g.addEventListener('click', () => vscode.postMessage({ type: 'reveal', range: node.range }));
-        g.addEventListener('mouseenter', (e) => showTooltip(e, node));
-        g.addEventListener('mousemove', (e) => moveTooltip(e));
-        g.addEventListener('mouseleave', hideTooltip);
+        div.style.cursor = 'pointer';
+        div.addEventListener('click', () => vscode.postMessage({ type: 'reveal', range: node.range }));
       }
 
-      nodesG.appendChild(g);
+      nodesDiv.appendChild(div);
     }
 
-    setupInteraction(canvas, svg, mainG, gW, gH);
+    applyTransform();
+    setupInteraction(canvas);
   } catch (err) {
     root.innerHTML = `<div class="error">Failed to render: ${err}</div>`;
   }
@@ -283,7 +240,7 @@ function showTooltip(e: MouseEvent, node: CfgNode) {
   const s = SHAPES[node.kind] ?? SHAPES.statement;
   tooltipEl.innerHTML = `
     <div class="tt-header" style="color:${s.stroke}">${node.kind.toUpperCase()}</div>
-    <div class="tt-body">${truncate(node.label ?? '', 120)}</div>
+    <div class="tt-body">${node.label ?? ''}</div>
     ${node.range ? `<div class="tt-src">Line ${node.range.startLine + 1}</div>` : ''}
   `;
   tooltipEl.style.display = 'block';
@@ -305,20 +262,21 @@ function hideTooltip() {
   if (tooltipEl) tooltipEl.style.display = 'none';
 }
 
-function setupInteraction(canvas: HTMLElement, svg: SVGSVGElement, mainG: SVGGElement, gW: number, gH: number) {
+function applyTransform() {
+  if (!viewportEl) return;
+  viewportEl.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  const lvl = document.getElementById('zoom-lvl');
+  if (lvl) lvl.textContent = Math.round(zoom * 100) + '%';
+}
+
+function setupInteraction(canvas: HTMLElement) {
   let dragging = false, lastX = 0, lastY = 0;
   const zoomIn = document.getElementById('zoom-in')!;
   const zoomOut = document.getElementById('zoom-out')!;
-  const zoomLvl = document.getElementById('zoom-lvl')!;
   const fit = document.getElementById('fit')!;
 
-  function applyTransform() {
-    mainG.setAttribute('transform', `translate(${panX},${panY}) scale(${zoom})`);
-    zoomLvl.textContent = Math.round(zoom * 100) + '%';
-  }
-
   canvas.addEventListener('mousedown', (e) => {
-    if ((e.target as HTMLElement).closest('.tb-btn, .toolbar')) return;
+    if ((e.target as HTMLElement).closest('.tb-btn, .toolbar, .node')) return;
     dragging = true;
     lastX = e.clientX;
     lastY = e.clientY;
@@ -366,8 +324,6 @@ function setupInteraction(canvas: HTMLElement, svg: SVGSVGElement, mainG: SVGGEl
     zoom = 1; panX = 0; panY = 0;
     applyTransform();
   });
-
-  applyTransform();
 }
 
 function filterActive(cfg: Cfg) {

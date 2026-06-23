@@ -44,6 +44,7 @@
   },
   "dependencies": {
     "elkjs": "^0.9.3",
+    "roughjs": "^4.6.6",
     "tree-sitter-wasms": "^0.1.13",
     "web-tree-sitter": "^0.22.0"
   }
