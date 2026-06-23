@@ -3,13 +3,16 @@ import { ensureParser } from './parser';
 import { buildCfg } from './cfg/builder';
 import { CodeFlowPanel } from './panel';
 import { WorkspaceIndex } from './indexer';
+import { ClassIndex } from './class-indexer';
 import { resolveCall } from './resolver';
 
 let currentPanel: CodeFlowPanel | undefined;
 let workspaceIndex: WorkspaceIndex;
+let classIndex: ClassIndex;
 
 export function activate(context: vscode.ExtensionContext) {
   workspaceIndex = new WorkspaceIndex();
+  classIndex = new ClassIndex();
 
   context.subscriptions.push(
     vscode.commands.registerCommand('codeflow.showProcedural', async () => {
@@ -22,17 +25,20 @@ export function activate(context: vscode.ExtensionContext) {
       const parser = await ensureParser(context);
 
       if (!workspaceIndex.isReady()) {
-        await workspaceIndex.build(parser);
+        await workspaceIndex.build(parser, classIndex);
       }
 
-      const tree = parser.parse(editor.document.getText());
+      const src = editor.document.getText();
+      const tree = parser.parse(src);
+      classIndex.build(editor.document.uri, src, tree.rootNode);
+
       const offset = editor.document.offsetAt(editor.selection.active);
 
       let fnNode: import('web-tree-sitter').default.SyntaxNode | null = null;
       const cursorNode = tree.rootNode.descendantForIndex(offset);
       const callNode = findCallAncestor(cursorNode);
       if (callNode) {
-        const resolved = resolveCall(callNode, editor.document.uri, workspaceIndex);
+        const resolved = resolveCall(callNode, editor.document.uri, workspaceIndex, classIndex);
         if (resolved) fnNode = resolved.entry.node;
       }
       if (!fnNode) {
@@ -47,13 +53,13 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       const cfg = buildCfg(fnNode, {
-        getText: () => editor.document.getText(),
+        getText: () => src,
         offsetAt: (pos) => editor.document.offsetAt(new vscode.Position(pos.line, pos.character)),
         positionAt: (offset) => {
           const pos = editor.document.positionAt(offset);
           return { line: pos.line, character: pos.character };
         },
-      }, workspaceIndex, editor.document.uri.toString());
+      }, workspaceIndex, editor.document.uri.toString(), classIndex);
 
       if (currentPanel) currentPanel.dispose();
       currentPanel = CodeFlowPanel.create(context, editor.document.uri, cfg, (range) => {

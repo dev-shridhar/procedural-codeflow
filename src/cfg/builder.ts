@@ -5,6 +5,8 @@ import * as N from './python-nodes';
 import { TextDocLike } from '../parser';
 import { resolveCall } from '../resolver';
 import { WorkspaceIndex, IndexEntry } from '../indexer';
+import { ClassIndex } from '../class-indexer';
+import { TypeEnv } from '../type-env';
 
 interface LoopCtx {
   continueTo: string;
@@ -21,11 +23,13 @@ class Builder {
   readonly exitId = 'exit';
   private callDepth = 0;
   private currentFileUri?: string;
+  private typeEnv = new TypeEnv();
 
   constructor(
     private doc: TextDocLike,
     private index?: WorkspaceIndex,
     private currentUri?: string,
+    private classIndex?: ClassIndex,
   ) {
     this.currentFileUri = currentUri;
     this.add({ id: 'entry', kind: 'entry', label: 'entry' });
@@ -70,16 +74,28 @@ class Builder {
       case N.TRY:       return this.tryStmt(node, preds);
       case N.WITH:      return this.block(node.childForFieldName('body')!, preds);
       case N.MATCH:     return this.matchStmt(node, preds);
-      case N.CLASS_DEF: return this.block(node.childForFieldName('body')!, preds);
+      case N.CLASS_DEF: {
+        const clsName = node.childForFieldName('name')?.text;
+        if (clsName) this.typeEnv.set('self', clsName);
+        return this.block(node.childForFieldName('body')!, preds);
+      }
       default:          return this.defaultStmt(node, preds);
     }
   }
 
   private defaultStmt(node: Parser.SyntaxNode, preds: string[]): string[] {
+    this.typeEnv.trackAssignment(node);
+
     if (this.index && this.callDepth < 1) {
       const callNode = findCallExpression(node);
       if (callNode) {
-        const resolved = resolveCall(callNode, this.currentUri ? uriFromString(this.currentUri) : undefined, this.index);
+        const resolved = resolveCall(
+          callNode,
+          this.currentUri ? uriFromString(this.currentUri) : undefined,
+          this.index,
+          this.classIndex,
+          this.typeEnv,
+        );
         if (resolved && resolved.entry.uri.fsPath !== this.currentFileUri) {
           return this.inlineCall(node, resolved.entry, preds);
         }
@@ -339,8 +355,9 @@ export function buildCfg(
   doc: TextDocLike,
   index?: WorkspaceIndex,
   currentUri?: string,
+  classIndex?: ClassIndex,
 ): Cfg {
-  const b = new Builder(doc, index, currentUri);
+  const b = new Builder(doc, index, currentUri, classIndex);
   const body = fn.childForFieldName('body')!;
   const frontier = b.block(body, ['entry']);
   b.link(frontier, b.exitId);

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import Parser from 'web-tree-sitter';
+import { ClassIndex } from './class-indexer';
 
 export interface IndexEntry {
   name: string;
@@ -12,8 +13,9 @@ export class WorkspaceIndex {
   private index = new Map<string, IndexEntry[]>();
   private ready = false;
 
-  async build(parser: Parser): Promise<void> {
+  async build(parser: Parser, classIndex?: ClassIndex): Promise<void> {
     this.index.clear();
+    if (classIndex) (classIndex as any).loadedFiles?.clear?.();
 
     const folders = vscode.workspace.workspaceFolders;
     if (!folders) return;
@@ -26,6 +28,7 @@ export class WorkspaceIndex {
         const src = doc.getText();
         const tree = parser.parse(src);
         this.indexFile(uri, src, tree.rootNode);
+        if (classIndex) classIndex.build(uri, src, tree.rootNode);
       } catch {
         // skip files that can't be read
       }
@@ -75,6 +78,13 @@ export class WorkspaceIndex {
     if (match) return match;
 
     return this.resolve(funcName, currentFile);
+  }
+
+  resolveReturnType(functionName: string, currentFile?: vscode.Uri): string | undefined {
+    const entry = this.resolve(functionName, currentFile);
+    if (!entry) return undefined;
+    const retType = entry.node.childForFieldName('return_type');
+    return retType ? retType.namedChild(0)?.text ?? retType.text : undefined;
   }
 
   isReady(): boolean { return this.ready; }
