@@ -20,6 +20,7 @@ const SHAPES = {
   merge:     { fill: '#37474f', stroke: '#78909c', icon: '', shape: 'circle' },
   return:    { fill: '#b71c1c', stroke: '#ef5350', icon: '⇦', shape: 'rect' },
   raise:     { fill: '#880e4f', stroke: '#ec407a', icon: '⚠', shape: 'rect' },
+  call:      { fill: '#00695c', stroke: '#26a69a', icon: '▸', shape: 'rect' },
 };
 
 const EDGE_STYLES: Record<string, { color: string; dash: string }> = {
@@ -116,6 +117,13 @@ async function render(cfg: Cfg) {
 
     if (!active.length) { root.innerHTML = '<div class="error">No nodes to render (all collapsed?)</div>'; return; }
 
+    const nodeIds = new Set(active.map(n => n.id));
+    const badEdges = egs.filter(e => !nodeIds.has(e.from) || !nodeIds.has(e.to));
+    if (badEdges.length) {
+      root.innerHTML = `<div class="error">Invalid edges: ${JSON.stringify(badEdges.slice(0,3))}</div>`;
+      return;
+    }
+
     const elkGraph = {
       id: 'root',
       layoutOptions: {
@@ -129,7 +137,13 @@ async function render(cfg: Cfg) {
       edges: egs.map((_,i) => ({id:`e${i}`,sources:[_.from],targets:[_.to]})),
     };
 
-    const layout = await elk.layout(elkGraph);
+    let layout: any;
+    try {
+      layout = await elk.layout(elkGraph);
+    } catch (elkErr) {
+      root.innerHTML = `<div class="error">ELK layout error: ${elkErr}\nGraph nodes: ${elkGraph.children.length}, edges: ${elkGraph.edges.length}</div>`;
+      return;
+    }
     const cMap = new Map(active.map(n => [n.id, n]));
     const eMap = new Map(egs.map((e,i) => [`e${i}`, e]));
     const lc = (layout.children ?? []) as ElkNode[];
@@ -171,15 +185,16 @@ async function render(cfg: Cfg) {
           edgesG.appendChild(el);
       }
 
-      const lbl = LABEL[info?.kind ?? ''] ?? '';
+      const lbl = info?.label ?? LABEL[info?.kind ?? ''] ?? '';
       if (lbl) {
         try {
           const mp = midPoint(e.sections[e.sections.length - 1]);
           if (mp.x == null || mp.y == null) continue;
+          const tw = lbl.length * 6.5 + 12;
           const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-          bg.setAttribute('x', String(mp.x - 18));
-          bg.setAttribute('y', String(mp.y - 18));
-          bg.setAttribute('width', '36');
+          bg.setAttribute('x', String(mp.x - tw / 2));
+          bg.setAttribute('y', String(mp.y - 10));
+          bg.setAttribute('width', String(tw));
           bg.setAttribute('height', '18');
           bg.setAttribute('rx', '4');
           bg.setAttribute('fill', '#252526');
@@ -189,7 +204,7 @@ async function render(cfg: Cfg) {
 
           const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
           t.setAttribute('x', String(mp.x));
-          t.setAttribute('y', String(mp.y - 4));
+          t.setAttribute('y', String(mp.y + 3));
           t.setAttribute('fill', st.color);
           t.setAttribute('font-size', '11');
           t.setAttribute('font-weight', '700');

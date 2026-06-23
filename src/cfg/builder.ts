@@ -70,6 +70,7 @@ class Builder {
       case N.TRY:       return this.tryStmt(node, preds);
       case N.WITH:      return this.block(node.childForFieldName('body')!, preds);
       case N.MATCH:     return this.matchStmt(node, preds);
+      case N.CLASS_DEF: return this.block(node.childForFieldName('body')!, preds);
       default:          return this.defaultStmt(node, preds);
     }
   }
@@ -85,8 +86,9 @@ class Builder {
       }
     }
 
+    const hasCall = findCallExpression(node) !== null;
     const id = this.add({
-      id: this.id(), kind: 'statement',
+      id: this.id(), kind: hasCall ? 'call' : 'statement',
       label: this.text(node),
       range: withUri(this.range(node), this.currentFileUri),
     });
@@ -98,7 +100,7 @@ class Builder {
     this.callDepth++;
 
     const callId = this.add({
-      id: this.id(), kind: 'statement',
+      id: this.id(), kind: 'call',
       label: `call ${resolved.name}`,
       range: withUri(this.range(stmtNode), resolved.uri.toString()),
     });
@@ -260,16 +262,23 @@ class Builder {
     const bodyFrontier = this.block(body, preds);
     const handlerFrontiers: string[] = [];
     for (const ex of node.childrenForFieldName('handler')) {
+      const excType = ex.firstNamedChild;
+      const excLabel = excType ? this.text(excType) : '';
       const hId = this.add({
         id: this.id(), kind: 'statement',
-        label: this.text(ex.firstNamedChild!),
+        label: excLabel || 'except',
         range: withUri(this.range(ex), this.currentFileUri),
       });
-      const firstBodyNode = body.firstNamedChild;
-      const source = firstBodyNode ? (bodyFrontier[0] ?? preds[0]) : preds[0];
-      this.link([source], hId, 'exception');
+      const source = bodyFrontier[0] ?? preds[0];
+      this.link([source], hId, 'exception', excLabel || 'exception');
       const handlerBody = ex.childForFieldName('consequence') ?? ex;
       handlerFrontiers.push(...this.block(handlerBody, [hId]));
+    }
+    const finallyBody = node.childForFieldName('finally_body');
+    if (finallyBody) {
+      const finalPreds = bodyFrontier.length ? bodyFrontier : preds;
+      const allPreds = [...finalPreds, ...handlerFrontiers];
+      return this.block(finallyBody, allPreds);
     }
     return [...bodyFrontier, ...handlerFrontiers];
   }
