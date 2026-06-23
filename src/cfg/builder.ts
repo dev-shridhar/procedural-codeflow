@@ -324,7 +324,25 @@ class Builder {
 
   private text(n: Parser.SyntaxNode | null): string {
     if (!n) return '';
-    return n.text;
+
+    // Function definitions: compact form
+    if (n.type === 'function_definition') {
+      const name = n.childForFieldName('name')?.text ?? '';
+      const params = n.childForFieldName('parameters')?.text ?? '()';
+      return `def ${name}${params}`;
+    }
+
+    const t = n.text;
+    const firstLine = t.split('\n')[0].trimEnd();
+
+    // Multi-line statement — first line ends with opening bracket or comma
+    if (t.includes('\n')) {
+      const stripped = firstLine.replace(/[({\[,]\s*$/, '').trimEnd();
+      return stripped ? stripped + '(...)' : firstLine;
+    }
+
+    // Single line — truncate if too long
+    return firstLine.length > 100 ? firstLine.slice(0, 97) + '...' : firstLine;
   }
 
   private range(n: Parser.SyntaxNode): SrcRange {
