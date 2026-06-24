@@ -1,12 +1,13 @@
 import * as vscode from 'vscode';
 import Parser from 'web-tree-sitter';
-import { ensureParser } from './parser';
+import { ensureParser, TextDocLike } from './parser';
 import { buildCfg } from './cfg/builder';
 import { CodeFlowPanel } from './panel';
 import { WorkspaceIndex } from './indexer';
 import { ClassIndex } from './class-indexer';
 import { resolveCall } from './resolver';
-import { Cfg, CfgNode, CfgEdge } from './cfg/model';
+import { Cfg, CfgNode, CfgEdge, SrcRange } from './cfg/model';
+import { buildErd, erdToCfg } from './erd/builder';
 
 let currentPanel: CodeFlowPanel | undefined;
 let workspaceIndex: WorkspaceIndex;
@@ -17,7 +18,7 @@ export function activate(context: vscode.ExtensionContext) {
   classIndex = new ClassIndex();
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('codeflow.showProcedural', async () => {
+    vscode.commands.registerCommand('codedetective.showCodeFlow', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor || editor.document.languageId !== 'python') {
         vscode.window.showInformationMessage('Place the cursor inside a Python function.');
@@ -36,7 +37,7 @@ export function activate(context: vscode.ExtensionContext) {
 
       const offset = editor.document.offsetAt(editor.selection.active);
 
-      let fnNode: import('web-tree-sitter').default.SyntaxNode | null = null;
+      let fnNode: Parser.SyntaxNode | null = null;
       let resolvedSource: string | undefined;
       const cursorNode = tree.rootNode.descendantForIndex(offset);
       const callNode = findCallAncestor(cursorNode);
@@ -68,25 +69,39 @@ export function activate(context: vscode.ExtensionContext) {
       if (!fnNode) {
         fnNode = findEnclosingFunction(tree.rootNode, offset);
       }
+      const isModuleMode = !fnNode;
       if (!fnNode) {
-        fnNode = findFirstFunction(tree.rootNode);
-        if (!fnNode) {
-          vscode.window.showInformationMessage('No function found in this file.');
-          return;
-        }
+        fnNode = tree.rootNode;
       }
 
       const useSrc = resolvedSource ?? src;
-      const doc = await vscode.workspace.openTextDocument({ content: useSrc });
-      const cfg = buildCfg(fnNode, {
-        getText: () => useSrc,
-        offsetAt: (pos) => doc.offsetAt(new vscode.Position(pos.line, pos.character)),
-        positionAt: (offset) => {
-          const pos = doc.positionAt(offset);
-          return { line: pos.line, character: pos.character };
-        },
-      }, workspaceIndex, editor.document.uri.toString(), classIndex);
+      const cfg = buildCfg(fnNode, textDoc(useSrc), workspaceIndex, editor.document.uri.toString(), classIndex, isModuleMode);
 
+      showCfg(editor, context, cfg);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('codedetective.showErd', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document.languageId !== 'python') {
+        vscode.window.showInformationMessage('Open a Python file.');
+        return;
+      }
+
+      const parser = await ensureParser(context);
+
+      if (!workspaceIndex.isReady()) {
+        await workspaceIndex.build(parser, classIndex);
+      }
+
+      const erd = await buildErd(parser);
+      if (erd.entities.length === 0) {
+        vscode.window.showInformationMessage('No entities found in the workspace.');
+        return;
+      }
+
+      const cfg = erdToCfg(erd);
       showCfg(editor, context, cfg);
     })
   );
@@ -94,25 +109,63 @@ export function activate(context: vscode.ExtensionContext) {
 
 function showCfg(editor: vscode.TextEditor, context: vscode.ExtensionContext, cfg: Cfg) {
   if (currentPanel) currentPanel.dispose();
-  currentPanel = CodeFlowPanel.create(context, editor.document.uri, cfg, (range) => {
-    if (!range) return;
-    if (range.uri) {
-      const uri = vscode.Uri.parse(range.uri);
-      vscode.workspace.openTextDocument(uri).then(doc => {
-        vscode.window.showTextDocument(doc).then(e => {
-          const start = new vscode.Position(range.startLine, range.startCol);
-          const end = new vscode.Position(range.endLine, range.endCol);
-          e.selection = new vscode.Selection(start, end);
-          e.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
+  currentPanel = CodeFlowPanel.create(
+    context,
+    editor.document.uri,
+    cfg,
+    (range) => {
+      if (!range) return;
+      if (range.uri) {
+        const uri = vscode.Uri.parse(range.uri);
+        vscode.workspace.openTextDocument(uri).then(doc => {
+          vscode.window.showTextDocument(doc).then(e => {
+            const start = new vscode.Position(range.startLine, range.startCol);
+            const end = new vscode.Position(range.endLine, range.endCol);
+            e.selection = new vscode.Selection(start, end);
+            e.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
+          });
         });
-      });
-    } else {
-      const start = new vscode.Position(range.startLine, range.startCol);
-      const end = new vscode.Position(range.endLine, range.endCol);
-      editor.selection = new vscode.Selection(start, end);
-      editor.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
+      } else {
+        const start = new vscode.Position(range.startLine, range.startCol);
+        const end = new vscode.Position(range.endLine, range.endCol);
+        editor.selection = new vscode.Selection(start, end);
+        editor.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
+      }
+    },
+    (range) => handleDrillIn(editor, context, range),
+  );
+}
+
+async function handleDrillIn(
+  editor: vscode.TextEditor,
+  context: vscode.ExtensionContext,
+  range: SrcRange,
+) {
+  if (!currentPanel) return;
+  const uri = range.uri ? vscode.Uri.parse(range.uri) : editor.document.uri;
+  const srcBuf = await vscode.workspace.fs.readFile(uri);
+  const src = Buffer.from(srcBuf).toString('utf-8');
+  const parser = await ensureParser(context);
+
+  if (!workspaceIndex.isReady()) {
+    await workspaceIndex.build(parser, classIndex);
+  }
+
+  const tree = parser.parse(src);
+  const offset = offsetInText(src, range.startLine, range.startCol);
+  let n: Parser.SyntaxNode | null = tree.rootNode.descendantForIndex(offset) as Parser.SyntaxNode | null;
+  while (n) {
+    if (n.type === 'function_definition' || n.type === 'class_definition' || n.type === 'async_function_definition') {
+      break;
     }
-  });
+    n = n.parent as Parser.SyntaxNode | null;
+  }
+  if (!n) {
+    vscode.window.showInformationMessage('No function or class at this location.');
+    return;
+  }
+  const cfg = buildCfg(n, textDoc(src), workspaceIndex, uri.toString(), classIndex, false);
+  currentPanel.updateCfg(cfg);
 }
 
 async function resolveViaLSP(
@@ -135,11 +188,11 @@ async function resolveViaLSP(
   const defOffset = doc.offsetAt(def.range.start);
 
   // Try to find enclosing function at definition
-  let n = tree.rootNode.descendantForIndex(defOffset);
+  let n: Parser.SyntaxNode | null = tree.rootNode.descendantForIndex(defOffset);
   while (n) {
     if (n.type === 'function_definition') return { node: n, source: src };
     if (n.type === 'class_definition') return { node: n, source: src };
-    n = n.parent;
+    n = n.parent as Parser.SyntaxNode | null;
   }
   return null;
 }
@@ -177,16 +230,16 @@ async function buildSignatureCard(editor: vscode.TextEditor, callName: string): 
   };
 }
 
-function findEnclosingFunction(root: import('web-tree-sitter').default.SyntaxNode, offset: number): import('web-tree-sitter').default.SyntaxNode | null {
-  let node = root.descendantForIndex(offset);
+function findEnclosingFunction(root: Parser.SyntaxNode, offset: number): Parser.SyntaxNode | null {
+  let node: Parser.SyntaxNode | null = root.descendantForIndex(offset);
   while (node) {
     if (node.type === 'function_definition') return node;
-    node = node.parent;
+    node = node.parent as Parser.SyntaxNode | null;
   }
   return null;
 }
 
-function findCallAncestor(node: import('web-tree-sitter').default.SyntaxNode | null): import('web-tree-sitter').default.SyntaxNode | null {
+function findCallAncestor(node: Parser.SyntaxNode | null): Parser.SyntaxNode | null {
   // First try walking up to find a direct call ancestor
   let n = node;
   while (n) {
@@ -202,7 +255,7 @@ function findCallAncestor(node: import('web-tree-sitter').default.SyntaxNode | n
   return findFirstCallDescendant(stmt);
 }
 
-function findFirstCallDescendant(node: import('web-tree-sitter').default.SyntaxNode | null): import('web-tree-sitter').default.SyntaxNode | null {
+function findFirstCallDescendant(node: Parser.SyntaxNode | null): Parser.SyntaxNode | null {
   if (!node) return null;
   if (node.type === 'call') return node;
   for (const child of node.namedChildren) {
@@ -212,13 +265,36 @@ function findFirstCallDescendant(node: import('web-tree-sitter').default.SyntaxN
   return null;
 }
 
-function findFirstFunction(root: import('web-tree-sitter').default.SyntaxNode): import('web-tree-sitter').default.SyntaxNode | null {
+function findFirstFunction(root: Parser.SyntaxNode): Parser.SyntaxNode | null {
   if (root.type === 'function_definition') return root;
   for (const child of root.namedChildren) {
     const found = findFirstFunction(child);
     if (found) return found;
   }
   return null;
+}
+
+function offsetInText(text: string, line: number, col: number): number {
+  const lines = text.split('\n');
+  let offset = 0;
+  for (let i = 0; i < line && i < lines.length; i++) offset += lines[i].length + 1;
+  return offset + col;
+}
+
+function positionInText(text: string, offset: number): { line: number; character: number } {
+  let line = 0, col = 0;
+  for (let i = 0; i < offset && i < text.length; i++) {
+    if (text[i] === '\n') { line++; col = 0; } else col++;
+  }
+  return { line, character: col };
+}
+
+function textDoc(source: string): TextDocLike {
+  return {
+    getText: () => source,
+    offsetAt: (pos) => offsetInText(source, pos.line, pos.character),
+    positionAt: (off) => positionInText(source, off),
+  };
 }
 
 export function deactivate() {}

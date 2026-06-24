@@ -24,6 +24,7 @@ class Builder {
   private callDepth = 0;
   private currentFileUri?: string;
   private typeEnv = new TypeEnv();
+  moduleMode = false;
 
   constructor(
     private doc: TextDocLike,
@@ -46,7 +47,7 @@ class Builder {
     return n.id;
   }
 
-  private link(from: string[], to: string, kind: CfgEdge['kind'] = 'normal', label?: string): void {
+  link(from: string[], to: string, kind: CfgEdge['kind'] = 'normal', label?: string): void {
     for (const f of from) {
       this.edges.push({ from: f, to, kind, label });
     }
@@ -74,12 +75,27 @@ class Builder {
       case N.TRY:       return this.tryStmt(node, preds);
       case N.WITH:      return this.block(node.childForFieldName('body')!, preds);
       case N.MATCH:     return this.matchStmt(node, preds);
-      case N.IMPORT:    return this.importStmt(node, preds);
-      case N.IMPORT_FROM: return this.importStmt(node, preds);
+      case N.FUNCTION_DEF:
+        return this.addDrillable(node, preds);
+      case N.IMPORT:
+      case N.IMPORT_FROM:
+        if (this.moduleMode) return this.defaultStmt(node, preds);
+        return preds;
+      case N.ASYNC_FUNC:
+        if (this.moduleMode) return this.addDrillable(node, preds);
+        return this.block(node.childForFieldName('body')!, preds);
+      case N.ASYNC_FOR:   return this.forStmt(node, preds);
+      case N.ASYNC_WITH:  return this.block(node.childForFieldName('body')!, preds);
       case N.CLASS_DEF: {
+        if (this.moduleMode) return this.addDrillable(node, preds);
         const clsName = node.childForFieldName('name')?.text;
         if (clsName) this.typeEnv.set('self', clsName);
         return this.block(node.childForFieldName('body')!, preds);
+      }
+      case N.DECORATED_DEF: {
+        const inner = node.namedChildren[node.namedChildren.length - 1];
+        if (inner) return this.statement(inner, preds);
+        return this.defaultStmt(node, preds);
       }
       default:          return this.defaultStmt(node, preds);
     }
@@ -87,6 +103,17 @@ class Builder {
 
   private importStmt(_node: Parser.SyntaxNode, preds: string[]): string[] {
     return preds;
+  }
+
+  private addDrillable(node: Parser.SyntaxNode, preds: string[]): string[] {
+    const id = this.add({
+      id: this.id(), kind: 'statement',
+      label: this.text(node),
+      range: withUri(this.range(node), this.currentFileUri),
+      drillable: true,
+    });
+    this.link(preds, id);
+    return [id];
   }
 
   private defaultStmt(node: Parser.SyntaxNode, preds: string[]): string[] {
@@ -316,7 +343,8 @@ class Builder {
     const out: string[] = [];
     for (const c of node.namedChildren.filter(n => n.type === N.CASE)) {
       const caseFrontier = this.block(c, [subjId]);
-      this.edges.filter(e => e.from === subjId && e.to === c.firstNamedChild?.id).forEach(e => (e.kind = 'case'));
+      const caseId = c.firstNamedChild?.id;
+      if (caseId != null) this.edges.filter(e => e.from === subjId && e.to === String(caseId)).forEach(e => (e.kind = 'case'));
       out.push(...caseFrontier);
     }
     return out;
@@ -326,10 +354,11 @@ class Builder {
     if (!n) return '';
 
     // Function definitions: compact form
-    if (n.type === 'function_definition') {
+    if (n.type === 'function_definition' || n.type === 'async_function_definition') {
+      const prefix = n.type === 'async_function_definition' ? 'async def' : 'def';
       const name = n.childForFieldName('name')?.text ?? '';
       const params = n.childForFieldName('parameters')?.text ?? '()';
-      return `def ${name}${params}`;
+      return `${prefix} ${name}${params}`;
     }
 
     const t = n.text;
@@ -379,9 +408,11 @@ export function buildCfg(
   index?: WorkspaceIndex,
   currentUri?: string,
   classIndex?: ClassIndex,
+  moduleMode = false,
 ): Cfg {
   const b = new Builder(doc, index, currentUri, classIndex);
-  const body = fn.childForFieldName('body')!;
+  b.moduleMode = moduleMode;
+  const body = fn.childForFieldName('body') ?? fn;
   const frontier = b.block(body, ['entry']);
   b.link(frontier, b.exitId);
   return { nodes: b.nodes, edges: b.edges, regions: b.regions, entryId: 'entry', exitId: b.exitId };

@@ -16,3 +16,7 @@ export const CLASS_DEF = 'class_definition';
 export const EXCEPT_HANDLER = 'except_clause';
 export const IMPORT = 'import_statement';
 export const IMPORT_FROM = 'import_from_statement';
+export const ASYNC_FUNC = 'async_function_definition';
+export const ASYNC_FOR = 'async_for_statement';
+export const ASYNC_WITH = 'async_with_statement';
+export const DECORATED_DEF = 'decorated_definition';

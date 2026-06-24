@@ -11,7 +11,7 @@ window.onerror = function(msg, url, line, col, err) {
   console.error('Uncaught:', msg, err);
 };
 
-const SHAPES = {
+const SHAPES: Record<string, { fill: string; stroke: string; icon: string; shape: string }> = {
   entry:     { fill: '#1b5e20', stroke: '#4caf50', icon: '▶', shape: 'oval' },
   exit:      { fill: '#b71c1c', stroke: '#f44336', icon: '■', shape: 'oval' },
   statement: { fill: '#0d47a1', stroke: '#42a5f5', icon: '', shape: 'rect' },
@@ -21,6 +21,7 @@ const SHAPES = {
   return:    { fill: '#b71c1c', stroke: '#ef5350', icon: '⇦', shape: 'rect' },
   raise:     { fill: '#880e4f', stroke: '#ec407a', icon: '⚠', shape: 'rect' },
   call:      { fill: '#00695c', stroke: '#26a69a', icon: '▸', shape: 'rect' },
+  entity:    { fill: '#1a237e', stroke: '#5c6bc0', icon: '▦', shape: 'rect' },
 };
 
 const EDGE_STYLES: Record<string, { color: string; dash: string }> = {
@@ -40,8 +41,11 @@ interface ElkNode { id: string; width: number; height: number; x?: number; y?: n
 interface ElkEdge { id: string; sources: string[]; targets: string[]; sections?: Array<{ startPoint: {x:number,y:number}; endPoint: {x:number,y:number}; bendPoints?: Array<{x:number,y:number}> }> }
 
 function measure(n: CfgNode): { w: number; h: number } {
-  const s = n.label?.split('\n')[0] ?? '';
-  const maxW = n.kind === 'entry' || n.kind === 'exit' ? 80 : 200;
+  const lines = n.label?.split('\n') ?? [''];
+  const maxW = n.kind === 'entry' || n.kind === 'exit' ? 80 : 240;
+  if (n.kind === 'entity') {
+    return { w: maxW, h: Math.max(40, lines.length * 18 + 8) };
+  }
   return { w: maxW, h: n.kind === 'merge' ? 24 : 40 };
 }
 
@@ -85,6 +89,8 @@ async function render(cfg: Cfg) {
         <span class="zoom-lvl" id="zoom-lvl">100%</span>
         <button class="tb-btn" id="zoom-out" title="Zoom Out">−</button>
         <button class="tb-btn" id="fit" title="Fit to View">⊡</button>
+        <span class="tb-sep"></span>
+        <button class="tb-btn" id="export-svg" title="Export SVG">↓</button>
       </div>
       <div class="tooltip" id="tooltip"></div>
       <div class="viewport" id="viewport">
@@ -259,7 +265,14 @@ async function render(cfg: Cfg) {
 
       const label = document.createElement('span');
       label.className = 'node-label';
-      label.textContent = node.label?.split('\n')[0] ?? '';
+      if (node.kind === 'entity') {
+        label.style.whiteSpace = 'pre';
+        label.style.textAlign = 'left';
+        label.style.fontSize = '11px';
+        label.textContent = node.label ?? '';
+      } else {
+        label.textContent = node.label?.split('\n')[0] ?? '';
+      }
       div.appendChild(label);
 
       div.addEventListener('mouseenter', (e) => {
@@ -291,7 +304,13 @@ async function render(cfg: Cfg) {
         });
       } else if (node.range) {
         div.style.cursor = 'pointer';
-        div.addEventListener('click', () => vscode.postMessage({ type: 'reveal', range: node.range }));
+        div.addEventListener('click', () => {
+          if (node.drillable) {
+            vscode.postMessage({ type: 'drillIn', range: node.range });
+          } else {
+            vscode.postMessage({ type: 'reveal', range: node.range });
+          }
+        });
       }
 
       nodesDiv.appendChild(div);
@@ -304,6 +323,7 @@ async function render(cfg: Cfg) {
     applyTransform();
     setupInteraction(canvas);
     setupPathsMode(canvas);
+    setupExport();
   } catch (err) {
     root.innerHTML = `<div class="error">Failed to render: ${err}</div>`;
   }
@@ -469,6 +489,63 @@ function highlightPathsTo(targetId: string) {
     const id = (s as SVGElement).dataset.id;
     if (id && !onPath.has(id)) s.classList.add('shape-dim');
   });
+}
+
+function setupExport() {
+  const btn = document.getElementById('export-svg')!;
+  btn.addEventListener('click', exportSvg);
+}
+
+function exportSvg() {
+  const shapesSvg = document.getElementById('shapes-svg') as unknown as SVGSVGElement;
+  const nodesDiv = document.getElementById('nodes') as HTMLDivElement;
+  if (!shapesSvg || !nodesDiv) return;
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const clone = shapesSvg.cloneNode(true) as SVGSVGElement;
+  clone.removeAttribute('style');
+  clone.setAttribute('viewBox', `0 0 ${gW} ${gH}`);
+  clone.setAttribute('width', String(gW));
+  clone.setAttribute('height', String(gH));
+
+  const bg = document.createElementNS(ns, 'rect');
+  bg.setAttribute('x', '0');
+  bg.setAttribute('y', '0');
+  bg.setAttribute('width', String(gW));
+  bg.setAttribute('height', String(gH));
+  bg.setAttribute('fill', '#1e1e1e');
+  clone.insertBefore(bg, clone.firstChild);
+
+  for (const nodeDiv of nodesDiv.querySelectorAll('.node')) {
+    const label = nodeDiv.querySelector('.node-label')?.textContent ?? '';
+    const x = parseFloat(nodeDiv.style.left);
+    const y = parseFloat(nodeDiv.style.top);
+    const w = parseFloat(nodeDiv.style.width);
+    const h = parseFloat(nodeDiv.style.height);
+    if (isNaN(x) || isNaN(y) || !label) continue;
+
+    const text = document.createElementNS(ns, 'text');
+    text.setAttribute('x', String(x + w / 2));
+    text.setAttribute('y', String(y + h / 2));
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('dominant-baseline', 'central');
+    text.setAttribute('fill', '#ffffff');
+    text.setAttribute('font-size', '12');
+    text.setAttribute('font-weight', '600');
+    text.setAttribute('font-family', `var(--vscode-editor-font-family, monospace)`);
+    text.textContent = label;
+    clone.appendChild(text);
+  }
+
+  const serializer = new XMLSerializer();
+  const svgStr = serializer.serializeToString(clone);
+  const blob = new Blob([svgStr], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'codeflow.svg';
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function setupPathsMode(canvas: HTMLElement) {

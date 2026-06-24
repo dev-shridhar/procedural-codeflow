@@ -4,7 +4,9 @@ export type CfgNodeKind =
   | 'branch'
   | 'loop'
   | 'merge'
-  | 'return' | 'raise';
+  | 'return' | 'raise'
+  | 'call'
+  | 'entity';
 
 export interface SrcRange {
   uri?: string;
@@ -20,6 +22,7 @@ export interface CfgNode {
   label: string;
   range?: SrcRange;
   regionId?: string;
+  drillable?: boolean;
 }
 
 export type EdgeKind = 'normal' | 'true' | 'false' | 'loop-back' | 'exception' | 'case';

@@ -1,12 +1,12 @@
 {
-  "name": "procedural-codeflow",
-  "displayName": "Procedural CodeFlow",
-  "description": "Render the procedural control flow of a selected function as an interactive, collapsible graph",
-  "version": "0.1.0",
+  "name": "code-detective",
+  "displayName": "CodeDetective",
+  "description": "Interactive control-flow graphs and entity-relationship diagrams for Python code",
+  "version": "0.3.0",
   "publisher": "dev-shridhar",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dev-shridhar/procedural-codeflow.git"
+    "url": "https://github.com/dev-shridhar/code-detective.git"
   },
   "license": "MIT",
   "icon": "media/icon128.png",
@@ -22,14 +22,18 @@
   "contributes": {
     "commands": [
       {
-        "command": "codeflow.showProcedural",
-        "title": "CodeFlow: Show procedural flow for function at cursor"
+        "command": "codedetective.showCodeFlow",
+        "title": "CodeDetective: Show code flow"
+      },
+      {
+        "command": "codedetective.showErd",
+        "title": "CodeDetective: Show ERD"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "command": "codeflow.showProcedural",
+          "command": "codedetective.showCodeFlow",
           "when": "editorLangId == python",
           "group": "navigation"
         }

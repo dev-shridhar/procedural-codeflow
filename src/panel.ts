@@ -19,6 +19,7 @@ export class CodeFlowPanel {
     private panel: vscode.WebviewPanel,
     extUri: vscode.Uri,
     private onReveal: (range: SrcRange | undefined) => void,
+    private onDrillIn?: (range: SrcRange) => void,
   ) {
     this.extUri = extUri;
     this.panel.onDidChangeViewState(() => this.update());
@@ -26,6 +27,8 @@ export class CodeFlowPanel {
     this.panel.webview.onDidReceiveMessage((msg) => {
       if (msg.type === 'reveal') {
         this.onReveal(msg.range);
+      } else if (msg.type === 'drillIn') {
+        this.onDrillIn?.(msg.range);
       }
     });
   }
@@ -35,6 +38,7 @@ export class CodeFlowPanel {
     uri: vscode.Uri,
     cfg: Cfg,
     onReveal: (range: SrcRange | undefined) => void,
+    onDrillIn?: (range: SrcRange) => void,
   ): CodeFlowPanel {
     const panel = vscode.window.createWebviewPanel(
       CodeFlowPanel.viewType,
@@ -49,13 +53,17 @@ export class CodeFlowPanel {
       },
     );
 
-    const instance = new CodeFlowPanel(panel, context.extensionUri, onReveal);
+    const instance = new CodeFlowPanel(panel, context.extensionUri, onReveal, onDrillIn);
     instance.render(cfg);
     return instance;
   }
 
   dispose() {
     this.panel.dispose();
+  }
+
+  updateCfg(cfg: Cfg) {
+    this.render(cfg);
   }
 
   private render(cfg: Cfg) {
