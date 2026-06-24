@@ -116,7 +116,6 @@ function extractFields(cls: Parser.SyntaxNode, source: string): string[] {
 
     if (stmt.type === 'expression_statement') {
       const assign = stmt.firstNamedChild;
-      // Annotated assignment: x: Type or x: Type = value
       if (assign?.type === 'assignment' && assign.childForFieldName('type')) {
         const name = assign.childForFieldName('left')?.text;
         const type = assign.childForFieldName('type')?.text;
@@ -125,12 +124,24 @@ function extractFields(cls: Parser.SyntaxNode, source: string): string[] {
         }
         continue;
       }
-      // Skip other expression statements (function calls, etc.)
       continue;
     }
 
-    // Also look at __init__ method for self.field assignments
+    // Look at __init__ method for self.field assignments
     if (stmt.type === 'function_definition' && stmt.childForFieldName('name')?.text === '__init__') {
+      // Build parameter name → type map
+      const paramMap = new Map<string, string>();
+      const params = stmt.childForFieldName('parameters');
+      if (params) {
+        for (const p of params.namedChildren) {
+          if (p.type === 'typed_parameter' || p.type === 'default_parameter') {
+            const pName = p.child(0)?.type === 'identifier' ? p.child(0).text : undefined;
+            const pType = p.childForFieldName('type')?.text;
+            if (pName && pType) paramMap.set(pName, pType);
+          }
+        }
+      }
+
       const initBody = stmt.childForFieldName('body');
       if (initBody) {
         for (const initStmt of initBody.namedChildren) {
@@ -141,8 +152,15 @@ function extractFields(cls: Parser.SyntaxNode, source: string): string[] {
               if (left?.type === 'attribute' && left.childForFieldName('object')?.text === 'self') {
                 const fieldName = left.childForFieldName('attribute')?.text;
                 if (fieldName && !fields.some(f => f.startsWith(fieldName + ':'))) {
-                  const type = assign.childForFieldName('type')?.text;
-                  fields.push(`${fieldName}: ${type ?? 'Any'}`);
+                  const inlineType = assign.childForFieldName('type')?.text;
+                  if (inlineType) {
+                    fields.push(`${fieldName}: ${inlineType}`);
+                  } else {
+                    // Try to infer type from parameter
+                    const right = assign.childForFieldName('right');
+                    const inferred = right && paramMap.get(right.text);
+                    fields.push(`${fieldName}: ${inferred ?? 'Any'}`);
+                  }
                 }
               }
             }
@@ -156,18 +174,21 @@ function extractFields(cls: Parser.SyntaxNode, source: string): string[] {
 }
 
 function extractTypeRef(field: string): string | null {
-  // Extract the type name from a field string like "name: TypeName" or "name: Optional[TypeName]"
   const match = field.match(/:\s*(\w+)/);
   if (!match) return null;
   const typeName = match[1];
-  if (typeName === 'Optional' || typeName === 'list' || typeName === 'List' || typeName === 'Set' || typeName === 'Dict' || typeName === 'tuple') {
-    // Extract inner type: Optional[TypeName], list[TypeName]
-    const inner = field.match(/\[(\w+)\]/);
-    return inner ? inner[1] : null;
-  }
-  if (typeName === 'str' || typeName === 'int' || typeName === 'float' || typeName === 'bool' || typeName === 'None' || typeName === 'Any') {
+  const GENERIC_TYPES = new Set(['Optional','list','List','Set','Dict','dict','tuple','Callable']);
+  const PRIMITIVE_TYPES = new Set(['str','int','float','bool','None','Any','bytes','bytearray']);
+  if (GENERIC_TYPES.has(typeName)) {
+    // Extract the LAST word inside brackets: dict[str, Order] → Order, list[LineItem] → LineItem
+    const inner = field.match(/\[([\w\s,]+)\]/);
+    if (!inner) return null;
+    const innerTypes = inner[1].split(',').map(s => s.trim()).filter(Boolean);
+    const lastType = innerTypes[innerTypes.length - 1];
+    if (lastType && !PRIMITIVE_TYPES.has(lastType) && !GENERIC_TYPES.has(lastType)) return lastType;
     return null;
   }
+  if (PRIMITIVE_TYPES.has(typeName)) return null;
   return typeName;
 }
 
