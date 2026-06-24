@@ -172,18 +172,20 @@ function extractTypeRef(field: string): string | null {
 }
 
 export function erdToCfg(erd: Erd): Cfg {
-  const nodes: CfgNode[] = [
-    { id: 'entry', kind: 'entry', label: 'entry' },
-    { id: 'exit', kind: 'exit', label: 'exit' },
-  ];
+  const nodes: CfgNode[] = [];
   const edges: CfgEdge[] = [];
+  let firstId = '';
+  let lastId = '';
 
   for (const ent of erd.entities) {
     const label = ent.fields.length > 0
       ? `${ent.name}\n${ent.fields.map(f => `  ${f}`).join('\n')}`
       : ent.name;
+    const id = `ent_${ent.name}`;
+    if (!firstId) firstId = id;
+    lastId = id;
     nodes.push({
-      id: `ent_${ent.name}`,
+      id,
       kind: 'entity',
       label,
       range: ent.range,
@@ -199,5 +201,5 @@ export function erdToCfg(erd: Erd): Cfg {
     }
   }
 
-  return { nodes, edges, regions: [], entryId: 'entry', exitId: 'exit' };
+  return { nodes, edges, regions: [], entryId: firstId, exitId: lastId };
 }
