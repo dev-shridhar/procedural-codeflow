@@ -113,64 +113,37 @@ function extractFields(cls: Parser.SyntaxNode, source: string): string[] {
   if (!body) return fields;
 
   for (const stmt of body.namedChildren) {
-    // Annotated assignment: x: Type or x: Type = value
+
     if (stmt.type === 'expression_statement') {
-      const expr = stmt.firstNamedChild;
-      if (expr?.type === 'assignment' || expr?.type === 'augmented_assignment') continue;
-    }
-    if (stmt.type === 'expression_statement' || stmt.type === 'assignment') {
-      const typed = stmt.descendantsOfType('typed_parameter');
-      for (const tp of typed) {
-        const nameNode = tp.childForFieldName('name');
-        const typeNode = tp.childForFieldName('type');
-        if (nameNode && typeNode) {
-          fields.push(`${nameNode.text}: ${typeNode.text}`);
+      const assign = stmt.firstNamedChild;
+      // Annotated assignment: x: Type or x: Type = value
+      if (assign?.type === 'assignment' && assign.childForFieldName('type')) {
+        const name = assign.childForFieldName('left')?.text;
+        const type = assign.childForFieldName('type')?.text;
+        if (name && type && !fields.some(f => f.startsWith(name + ':'))) {
+          fields.push(`${name}: ${type}`);
         }
+        continue;
       }
+      // Skip other expression statements (function calls, etc.)
+      continue;
     }
 
-    // Handle `x: int` and `x: int = 5` patterns
-    if (stmt.type === 'expression_statement') {
-      const first = stmt.firstNamedChild;
-      if (first?.type === 'assignment' || first?.type === 'augmented_assignment') {
-        // skip assignments that aren't type-annotated
-      }
-    }
-
-    // Simple annotated assignment: x: Type, x: Type = value
-    // These appear as children of block with type annotation
-    for (const child of stmt.namedChildren) {
-      if (child.type === 'typed_parameter' || child.type === 'default_parameter') {
-        const nameNode = child.childForFieldName('name');
-        if (nameNode) {
-          const text = child.text;
-          if (text.includes(':')) {
-            const parts = text.split(':', 2);
-            fields.push(`${parts[0].trim()}: ${parts[1].trim()}`);
-          } else {
-            fields.push(text);
-          }
-        }
-      }
-    }
-  }
-
-  // Also look at __init__ method for self.field assignments
-  const init = body.namedChildren.find(
-    c => c.type === 'function_definition' && c.childForFieldName('name')?.text === '__init__'
-  );
-  if (init) {
-    const initBody = init.childForFieldName('body');
-    if (initBody) {
-      for (const stmt of initBody.namedChildren) {
-        if (stmt.type === 'expression_statement') {
-          const assign = stmt.firstNamedChild;
-          if (assign?.type === 'assignment') {
-            const left = assign.childForFieldName('left');
-            if (left?.type === 'attribute' && left.childForFieldName('object')?.text === 'self') {
-              const fieldName = left.childForFieldName('attribute')?.text;
-              if (fieldName && !fields.some(f => f.startsWith(fieldName + ':'))) {
-                fields.push(`${fieldName}: Any`);
+    // Also look at __init__ method for self.field assignments
+    if (stmt.type === 'function_definition' && stmt.childForFieldName('name')?.text === '__init__') {
+      const initBody = stmt.childForFieldName('body');
+      if (initBody) {
+        for (const initStmt of initBody.namedChildren) {
+          if (initStmt.type === 'expression_statement') {
+            const assign = initStmt.firstNamedChild;
+            if (assign?.type === 'assignment') {
+              const left = assign.childForFieldName('left');
+              if (left?.type === 'attribute' && left.childForFieldName('object')?.text === 'self') {
+                const fieldName = left.childForFieldName('attribute')?.text;
+                if (fieldName && !fields.some(f => f.startsWith(fieldName + ':'))) {
+                  const type = assign.childForFieldName('type')?.text;
+                  fields.push(`${fieldName}: ${type ?? 'Any'}`);
+                }
               }
             }
           }
