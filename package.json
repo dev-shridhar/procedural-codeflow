@@ -36,6 +36,11 @@
           "command": "codedetective.showCodeFlow",
           "when": "editorLangId == python",
           "group": "navigation"
+        },
+        {
+          "command": "codedetective.showErd",
+          "when": "editorLangId == python",
+          "group": "navigation"
         }
       ]
     }

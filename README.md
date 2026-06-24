@@ -4,8 +4,8 @@ Interactive control-flow graphs and entity-relationship diagrams for Python code
 
 ## Features
 
-- **One-click CFG** — right-click any Python function and select "CodeDetective: Show code flow"
-- **ERD** — visualize entity-relationship diagrams from your classes
+- **One-click CFG** — right-click any Python function → "CodeDetective: Show code flow"
+- **One-click ERD** — right-click any Python file → "CodeDetective: Show ERD"
 - **Hand-drawn aesthetic** — RoughJS sketchy style
 - **Interactive** — pan, zoom, hover for tooltips, collapse/expand regions
 - **Call resolution** — cursor on a function call shows the callee's CFG
@@ -15,7 +15,7 @@ Interactive control-flow graphs and entity-relationship diagrams for Python code
 ## Usage
 
 1. Open a Python file
-2. Right-click inside any function → **CodeDetective: Show code flow**
+2. Right-click inside any function → **CodeDetective: Show code flow**, or right-click anywhere → **CodeDetective: Show ERD**
 3. Or run from command palette (`Cmd+Shift+P`): **CodeDetective: Show code flow** / **CodeDetective: Show ERD**
 
 ### Graph Controls
