@@ -8,6 +8,7 @@ import { ClassIndex } from './class-indexer';
 import { resolveCall } from './resolver';
 import { Cfg, CfgNode, CfgEdge, SrcRange } from './cfg/model';
 import { buildErd, erdToCfg } from './erd/builder';
+import { TypeEnv } from './type-env';
 
 let currentPanel: CodeFlowPanel | undefined;
 let workspaceIndex: WorkspaceIndex;
@@ -190,7 +191,38 @@ async function handleDrillIn(
       return null;
     }
 
+    // Build TypeEnv from enclosing function's parameters and class context
+    function buildTypeEnv(): TypeEnv {
+      const tenv = new TypeEnv();
+      const fn = walkUp(descendant, ['function_definition', 'async_function_definition']);
+      if (!fn) return tenv;
+
+      const cls = walkUp(descendant, ['class_definition']);
+      if (cls) {
+        const cn = cls.childForFieldName('name');
+        if (cn) tenv.set('self', cn.text);
+      }
+
+      const params = fn.childForFieldName('parameters');
+      if (params) {
+        for (const p of params.namedChildren) {
+          const pName = p.child(0)?.text;
+          const pType = p.childForFieldName('type')?.text;
+          if (pName && pType && pName !== 'self' && pName !== 'cls') {
+            tenv.set(pName, pType);
+          }
+        }
+      }
+
+      const body = fn.childForFieldName('body');
+      if (body) {
+        for (const stmt of body.namedChildren) tenv.trackAssignment(stmt);
+      }
+      return tenv;
+    }
+
     // Step 1: Try to find a call ancestor (walk up from the deepest node)
+    const typeEnv = buildTypeEnv();
     let callNode = walkUp(descendant, ['call']);
     if (!callNode) {
       // The range might cover a whole statement; search its descendants for a call
@@ -200,7 +232,7 @@ async function handleDrillIn(
     }
 
     if (callNode) {
-      const resolved = resolveCall(callNode, uri, workspaceIndex, classIndex);
+      const resolved = resolveCall(callNode, uri, workspaceIndex, classIndex, typeEnv);
       if (resolved) {
         const resolvedUri = resolved.entry.uri;
         const resolvedSrc = resolvedUri.toString() !== uri.toString()
