@@ -119,35 +119,7 @@ function showCfg(editor: vscode.TextEditor, context: vscode.ExtensionContext, cf
     context,
     editor.document.uri,
     cfg,
-    (range) => {
-      if (!range) return;
-      if (range.uri) {
-        try {
-          const uri = vscode.Uri.parse(range.uri);
-          vscode.workspace.openTextDocument(uri).then(doc => {
-            vscode.window.showTextDocument(doc).then(e => {
-              const start = new vscode.Position(range.startLine, range.startCol);
-              const end = new vscode.Position(range.endLine, range.endCol);
-              e.selection = new vscode.Selection(start, end);
-              e.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
-            });
-          }, () => {
-            if (range) fallbackReveal(range);
-          });
-        } catch {
-          if (range) fallbackReveal(range);
-        }
-      } else {
-        fallbackReveal(range);
-      }
-      function fallbackReveal(r: SrcRange) {
-        if (!editor) return;
-        const start = new vscode.Position(r.startLine, r.startCol);
-        const end = new vscode.Position(r.endLine, r.endCol);
-        editor.selection = new vscode.Selection(start, end);
-        editor.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
-      }
-    },
+    (range) => { if (range) revealRange(editor, range); },
     (range) => handleDrillIn(editor, context, range),
   );
 }
@@ -170,17 +142,70 @@ async function handleDrillIn(
 
     const tree = parser.parse(src);
     const offset = offsetInText(src, range.startLine, range.startCol);
-    let n: Parser.SyntaxNode | null = tree.rootNode.descendantForIndex(offset) as Parser.SyntaxNode | null;
+    const descendant = tree.rootNode.descendantForIndex(offset) as Parser.SyntaxNode | null;
 
-    // If clicked on a call, resolve it to find the callee
-    if (n?.type === 'call') {
-      const resolved = resolveCall(n, uri, workspaceIndex, classIndex);
+    const layout = currentPanel.getLayout();
+
+    // ERD drill-in: refocus on the clicked entity
+    if (layout === 'erd') {
+      let cls: Parser.SyntaxNode | null = descendant;
+      while (cls) {
+        if (cls.type === 'class_definition') break;
+        cls = cls.parent as Parser.SyntaxNode | null;
+      }
+      if (cls) {
+        const nameNode = cls.childForFieldName('name');
+        const className = nameNode?.text;
+        if (className) {
+          const erd = await buildErd(parser, editor.document.uri);
+          const cfg = erdToCfg(erd, className);
+          currentPanel.updateCfg(cfg, className);
+          return;
+        }
+      }
+      // Fallback: reveal source
+      revealRange(editor, range);
+      return;
+    }
+
+    // CFG drill-in logic:
+
+    // Helper: walk up to find the first ancestor matching one of the given types
+    function walkUp(node: Parser.SyntaxNode | null, types: string[]): Parser.SyntaxNode | null {
+      while (node) {
+        if (types.includes(node.type)) return node;
+        node = node.parent as Parser.SyntaxNode | null;
+      }
+      return null;
+    }
+
+    // Helper: check if a node contains a call expression among its descendants
+    function findCallDescendant(node: Parser.SyntaxNode | null): Parser.SyntaxNode | null {
+      if (!node) return null;
+      if (node.type === 'call') return node;
+      for (const child of node.namedChildren) {
+        const found = findCallDescendant(child);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    // Step 1: Try to find a call ancestor (walk up from the deepest node)
+    let callNode = walkUp(descendant, ['call']);
+    if (!callNode) {
+      // The range might cover a whole statement; search its descendants for a call
+      let stmt = walkUp(descendant, ['expression_statement', 'assignment', 'return_statement']);
+      if (!stmt) stmt = descendant;
+      callNode = findCallDescendant(stmt);
+    }
+
+    if (callNode) {
+      const resolved = resolveCall(callNode, uri, workspaceIndex, classIndex);
       if (resolved) {
         const resolvedUri = resolved.entry.uri;
         const resolvedSrc = resolvedUri.toString() !== uri.toString()
           ? Buffer.from(await vscode.workspace.fs.readFile(resolvedUri)).toString('utf-8')
           : src;
-        const resolvedTree = resolvedSrc === src ? tree : parser.parse(resolvedSrc);
         const resolvedNode = resolved.entry.node;
         const nameNode = resolvedNode.childForFieldName('name');
         const crumbLabel = nameNode?.text ?? '<anonymous>';
@@ -190,23 +215,48 @@ async function handleDrillIn(
       }
     }
 
-    // Fallback: walk up to enclosing function/class definition
-    while (n) {
-      if (n.type === 'function_definition' || n.type === 'class_definition' || n.type === 'async_function_definition') {
-        break;
-      }
-      n = n.parent as Parser.SyntaxNode | null;
-    }
-    if (!n) {
-      vscode.window.showInformationMessage('No function or class at this location.');
+    // Step 2: Walk up to find enclosing function or class definition
+    const fnNode = walkUp(descendant, ['function_definition', 'class_definition', 'async_function_definition']);
+    if (fnNode) {
+      const nameNode = fnNode.childForFieldName('name');
+      const crumbLabel = nameNode?.text ?? '<anonymous>';
+      const cfg = buildCfg(fnNode, textDoc(src), workspaceIndex, uri.toString(), classIndex, false);
+      currentPanel.updateCfg(cfg, crumbLabel);
       return;
     }
-    const nameNode = n.childForFieldName('name');
-    const crumbLabel = nameNode?.text ?? '<anonymous>';
-    const cfg = buildCfg(n, textDoc(src), workspaceIndex, uri.toString(), classIndex, false);
-    currentPanel.updateCfg(cfg, crumbLabel);
+
+    // Step 3: Nothing worked — reveal the source so user can see the code
+    revealRange(editor, range);
   } catch (e) {
     vscode.window.showInformationMessage(`Drill-in failed: ${e}`);
+  }
+}
+
+function revealRange(editor: vscode.TextEditor, range: SrcRange) {
+  if (!range) return;
+  function fallbackReveal(r: SrcRange) {
+    if (!editor) return;
+    const start = new vscode.Position(r.startLine, r.startCol);
+    const end = new vscode.Position(r.endLine, r.endCol);
+    editor.selection = new vscode.Selection(start, end);
+    editor.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
+  }
+  if (range.uri) {
+    try {
+      const dstUri = vscode.Uri.parse(range.uri);
+      vscode.workspace.openTextDocument(dstUri).then(doc => {
+        vscode.window.showTextDocument(doc).then(e => {
+          const start = new vscode.Position(range.startLine, range.startCol);
+          const end = new vscode.Position(range.endLine, range.endCol);
+          e.selection = new vscode.Selection(start, end);
+          e.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
+        });
+      }, () => fallbackReveal(range));
+    } catch {
+      fallbackReveal(range);
+    }
+  } else {
+    fallbackReveal(range);
   }
 }
 

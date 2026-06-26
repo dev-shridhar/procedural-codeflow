@@ -72,6 +72,10 @@ export class CodeFlowPanel {
     return instance;
   }
 
+  getLayout(): 'cfg' | 'erd' | undefined {
+    return this.currentCfg?.layout;
+  }
+
   dispose() {
     this.panel.dispose();
   }
