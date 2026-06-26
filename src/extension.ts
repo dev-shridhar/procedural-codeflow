@@ -6,7 +6,7 @@ import { CodeFlowPanel } from './panel';
 import { WorkspaceIndex } from './indexer';
 import { ClassIndex } from './class-indexer';
 import { resolveCall } from './resolver';
-import { Cfg, CfgNode, CfgEdge, SrcRange } from './cfg/model';
+import { Cfg, SrcRange } from './cfg/model';
 import { buildErd, erdToCfg } from './erd/builder';
 import { TypeEnv } from './type-env';
 
@@ -38,12 +38,39 @@ export function activate(context: vscode.ExtensionContext) {
 
       const offset = editor.document.offsetAt(editor.selection.active);
 
+      // Build TypeEnv from enclosing function's parameters and assignments
+      const cursorNode = tree.rootNode.descendantForIndex(offset);
+      const typeEnv = new TypeEnv();
+      let enclosingFn = findEnclosingFunction(tree.rootNode, offset);
+      if (enclosingFn) {
+        let enclosingClass: Parser.SyntaxNode | null = cursorNode;
+        while (enclosingClass) {
+          if (enclosingClass.type === 'class_definition') break;
+          enclosingClass = enclosingClass.parent as Parser.SyntaxNode | null;
+        }
+        if (enclosingClass) {
+          const cn = enclosingClass.childForFieldName('name');
+          if (cn) typeEnv.set('self', cn.text);
+        }
+        const params = enclosingFn.childForFieldName('parameters');
+        if (params) {
+          for (const p of params.namedChildren) {
+            const pName = p.child(0)?.text;
+            const pType = p.childForFieldName('type')?.text;
+            if (pName && pType && pName !== 'self' && pName !== 'cls') typeEnv.set(pName, pType);
+          }
+        }
+        const body = enclosingFn.childForFieldName('body');
+        if (body) {
+          for (const stmt of body.namedChildren) typeEnv.trackAssignment(stmt);
+        }
+      }
+
       let fnNode: Parser.SyntaxNode | null = null;
       let resolvedSource: string | undefined;
-      const cursorNode = tree.rootNode.descendantForIndex(offset);
       const callNode = findCallAncestor(cursorNode);
       if (callNode) {
-        const resolved = resolveCall(callNode, editor.document.uri, workspaceIndex, classIndex);
+        const resolved = resolveCall(callNode, editor.document.uri, workspaceIndex, classIndex, typeEnv);
         if (resolved) {
           fnNode = resolved.entry.node;
           if (resolved.entry.uri.toString() !== editor.document.uri.toString()) {
@@ -385,15 +412,6 @@ function findFirstCallDescendant(node: Parser.SyntaxNode | null): Parser.SyntaxN
   if (node.type === 'call') return node;
   for (const child of node.namedChildren) {
     const found = findFirstCallDescendant(child);
-    if (found) return found;
-  }
-  return null;
-}
-
-function findFirstFunction(root: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  if (root.type === 'function_definition') return root;
-  for (const child of root.namedChildren) {
-    const found = findFirstFunction(child);
     if (found) return found;
   }
   return null;

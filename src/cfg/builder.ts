@@ -101,10 +101,6 @@ class Builder {
     }
   }
 
-  private importStmt(_node: Parser.SyntaxNode, preds: string[]): string[] {
-    return preds;
-  }
-
   private addDrillable(node: Parser.SyntaxNode, preds: string[]): string[] {
     const id = this.add({
       id: this.id(), kind: 'statement',
