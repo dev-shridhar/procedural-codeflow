@@ -1,15 +1,12 @@
 # CodeDetective
 
-Instant flowcharts from your Python code. Right-click any function and see its control-flow diagram — right inside VS Code.
+Instant flowcharts from your Python code. Right-click any function — CodeDetective parses it with tree-sitter, resolves calls across files via type inference, and renders an interactive control-flow diagram right inside VS Code.
 
 ## Screenshots
 
-<table>
-  <tr>
-    <td><img src="media/screenshot-function.png" alt="Function CFG"/><br/><em>Function-level CFG</em></td>
-    <td><img src="media/screenshot-module.png" alt="Module CFG"/><br/><em>Module-level view</em></td>
-  </tr>
-</table>
+![](media/screenshot-main.png)
+
+![](media/screenshot-function.png)
 
 ## Features
 

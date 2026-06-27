@@ -1,8 +1,8 @@
 {
   "name": "codedetective",
   "displayName": "CodeDetective",
-  "description": "Instant flowcharts from your Python code. Right-click any function to see its control-flow diagram right inside VS Code.",
-  "version": "0.4.3",
+  "description": "Instant flowcharts from your Python code. Right-click any function — CodeDetective parses it with tree-sitter, resolves calls across files, and renders an interactive control-flow diagram right inside VS Code.",
+  "version": "0.4.4",
   "publisher": "dev-shridhar",
   "repository": {
     "type": "git",
