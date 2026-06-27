@@ -2,7 +2,7 @@
   "name": "codedetective",
   "displayName": "CodeDetective",
   "description": "Interactive control-flow graphs for Python code. ERD diagrams coming in a future release!",
-  "version": "0.5.0",
+  "version": "0.4.1",
   "publisher": "dev-shridhar",
   "repository": {
     "type": "git",
